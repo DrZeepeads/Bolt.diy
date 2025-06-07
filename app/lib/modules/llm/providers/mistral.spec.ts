@@ -1,105 +1,92 @@
-import { describe, it, expect, vi } from 'vitest';
-import { MistralProvider } from './mistral';
-import { Mistral } from '@ai-sdk/mistral';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createMistral } from '@ai-sdk/mistral';
 
-// Mock the Mistral client
-vi.mock('@ai-sdk/mistral', () => {
-  const MistralChat = vi.fn();
-  MistralChat.prototype.chat = vi.fn();
-  return { Mistral: MistralChat };
-});
+// Mock the createMistral function and LLMManager to avoid circular dependencies
+vi.mock('@ai-sdk/mistral', () => ({
+  createMistral: vi.fn(() => vi.fn()),
+}));
+
+vi.mock('~/lib/modules/llm/manager', () => ({
+  LLMManager: {
+    getInstance: vi.fn(() => ({
+      env: {},
+    })),
+  },
+}));
 
 describe('MistralProvider', () => {
-  const provider = new MistralProvider();
+  let MistralProvider: any;
 
-  it('should have correct provider details', () => {
-    expect(provider.id).toBe('mistral');
-    expect(provider.name).toBe('Mistral');
-    expect(provider.docsUrl).toBe('https://docs.mistral.ai/');
+  beforeEach(async () => {
+    // Dynamic import to avoid circular dependency issues
+    const module = await import('./mistral');
+    MistralProvider = module.default;
   });
 
-  it('should return a Mistral instance from getModelInstance', () => {
+  it('should have correct provider details', () => {
+    const provider = new MistralProvider();
+    expect(provider.name).toBe('Mistral');
+    expect(provider.getApiKeyLink).toBe('https://console.mistral.ai/api-keys/');
+    expect(provider.config.apiTokenKey).toBe('MISTRAL_API_KEY');
+  });
+
+  it('should have correct static models', () => {
+    const provider = new MistralProvider();
+    expect(provider.staticModels).toHaveLength(9);
+    expect(provider.staticModels[0]).toEqual({
+      name: 'mistral-large-latest',
+      label: 'Mistral Large (Latest)',
+      provider: 'Mistral',
+      maxTokenAllowed: 8000,
+    });
+  });
+
+  it('should return a model instance from getModelInstance', () => {
+    const provider = new MistralProvider();
+    const mockMistral = vi.fn();
+    const mockModel = vi.fn();
+    (createMistral as any).mockReturnValue(mockMistral);
+    mockMistral.mockReturnValue(mockModel);
+
     const modelInstance = provider.getModelInstance({
       model: 'mistral-large-latest',
-      serverEnv: {},
-      apiKeys: { mistral: 'test-api-key' },
+      serverEnv: { MISTRAL_API_KEY: 'test-api-key' } as any,
+      apiKeys: {},
     });
-    expect(Mistral).toHaveBeenCalledWith({
+
+    expect(createMistral).toHaveBeenCalledWith({
       apiKey: 'test-api-key',
-      baseURL: undefined, // Or your default base URL if defined
     });
-    expect(modelInstance).toBeInstanceOf(Mistral);
+    expect(mockMistral).toHaveBeenCalledWith('mistral-large-latest');
+    expect(modelInstance).toBe(mockModel);
   });
 
   it('should throw error if API key is missing in getModelInstance', () => {
+    const provider = new MistralProvider();
     expect(() =>
       provider.getModelInstance({
         model: 'mistral-large-latest',
-        serverEnv: {},
+        serverEnv: {} as any,
+        apiKeys: {},
       })
-    ).toThrow('Missing Mistral API key');
+    ).toThrow('Missing API key for Mistral provider');
   });
 
-  it('should return API key from apiKeys first', () => {
-    const apiKey = provider.getApiKey({ mistral: 'key-from-apikeys' }, { mistral: { apiKey: 'key-from-settings' } });
-    expect(apiKey).toBe('key-from-apikeys');
-  });
+  it('should prioritize apiKeys over environment variables', () => {
+    const provider = new MistralProvider();
+    const mockMistral = vi.fn();
+    const mockModel = vi.fn();
+    (createMistral as any).mockReturnValue(mockMistral);
+    mockMistral.mockReturnValue(mockModel);
 
-  it('should return API key from providerSettings if not in apiKeys', () => {
-    const apiKey = provider.getApiKey({}, { mistral: { apiKey: 'key-from-settings', enabled: true, id: 'mistral', name: 'Mistral' } });
-    expect(apiKey).toBe('key-from-settings');
-  });
-
-  it('should return undefined if API key is not found', () => {
-    const apiKey = provider.getApiKey({}, {});
-    expect(apiKey).toBeUndefined();
-  });
-
-  // Add more tests for checkApiKey if implemented
-  // For example, if checkApiKey makes an API call:
-  it('checkApiKey should return true for a valid key', async () => {
-    const mistralInstance = new Mistral({apiKey: 'valid-key'});
-    (mistralInstance.chat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ choices: [] }); // Mock a successful API call
-
-    // Temporarily unmock and mock constructor for this test
-    const OriginalMistral = await vi.importActual('@ai-sdk/mistral') as { Mistral: typeof Mistral };
-    const constructorMock = vi.fn(() => mistralInstance);
-    vi.doMock('@ai-sdk/mistral', () => ({ Mistral: constructorMock }));
-
-    const providerToTest = new MistralProvider(); // Re-instantiate to use the new mock
-    const isValid = await providerToTest.checkApiKey('valid-key');
-    expect(isValid).toBe(true);
-    expect(constructorMock).toHaveBeenCalledWith({ apiKey: 'valid-key' });
-    expect(mistralInstance.chat).toHaveBeenCalledWith('test');
-
-    // Restore original mock
-    vi.doMock('@ai-sdk/mistral', () => {
-      const MistralChat = vi.fn();
-      MistralChat.prototype.chat = vi.fn();
-      return { Mistral: MistralChat };
+    provider.getModelInstance({
+      model: 'mistral-large-latest',
+      serverEnv: { MISTRAL_API_KEY: 'env-key' } as any,
+      apiKeys: { Mistral: 'api-keys-key' },
     });
-  });
 
-  it('checkApiKey should return false for an invalid key', async () => {
-    const mistralInstance = new Mistral({apiKey: 'invalid-key'});
-    (mistralInstance.chat as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('API error')); // Mock a failed API call
-
-    // Temporarily unmock and mock constructor for this test
-    const OriginalMistral = await vi.importActual('@ai-sdk/mistral') as { Mistral: typeof Mistral };
-    const constructorMock = vi.fn(() => mistralInstance);
-    vi.doMock('@ai-sdk/mistral', () => ({ Mistral: constructorMock }));
-
-    const providerToTest = new MistralProvider(); // Re-instantiate to use the new mock
-    const isValid = await providerToTest.checkApiKey('invalid-key');
-    expect(isValid).toBe(false);
-    expect(constructorMock).toHaveBeenCalledWith({ apiKey: 'invalid-key' });
-    expect(mistralInstance.chat).toHaveBeenCalledWith('test');
-
-    // Restore original mock
-    vi.doMock('@ai-sdk/mistral', () => {
-      const MistralChat = vi.fn();
-      MistralChat.prototype.chat = vi.fn();
-      return { Mistral: MistralChat };
+    expect(createMistral).toHaveBeenCalledWith({
+      apiKey: 'api-keys-key',
     });
   });
 });
